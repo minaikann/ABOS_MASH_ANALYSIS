@@ -2,14 +2,7 @@
 title: "Metabolites that identify MASH with normal ALT"
 author: "Deborah Mina Ikann"
 date: "2026-07-07"
-output:
-  html_document:
-    toc: true
-    toc_float: true
-    toc_depth: 3
-    code_folding: hide
-    theme: flatly
----
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
