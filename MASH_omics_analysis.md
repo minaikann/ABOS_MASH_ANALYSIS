@@ -14,7 +14,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-# Question
+# Questions
 
 1. **Can plasma metabolites identify MASH when ALT is normal?**
    (MASH vs no-MASH, restricted to normal-ALT patients — **Part A**)
@@ -33,6 +33,22 @@ knitr::opts_chunk$set(
 
 6. **Which liver metabolites are dysregulated with MASH when ALT is normal?**
    (MASH vs no-MASH, applied to normal-ALT patients — **Part F**)
+
+Structure of the document:
+
+| Section | Content |
+|---|---|
+| Setup | libraries, constants, data, shared helpers |
+| Cohort overview | counts + flowcharts for the whole cohort and the normal-ALT subset |
+| Part A | plasma metabolomics, normal ALT |
+| Part B | selected metabolites across CTRL / CM / LS |
+| Part C | plasma metabolomics, whole cohort (validation) |
+| Part D | liver transcriptomics, whole cohort |
+| Part E | liver transcriptomics, normal ALT |
+| Part F | liver metabolomics, normal ALT |
+
+Within every part the order is the same: **align → describe (flowchart / table)
+→ model → annotate → summarise**.
 
 # Setup
 
@@ -80,17 +96,22 @@ library(DiagrammeR)
 
 ## Paths and constants
 
+Every constant used anywhere in the document is defined **here and only here**
+
 ```{r paths}
 data_dir <- "~/Documents/Clustering_ABOS/codes/Data"
-fun_dir  <- "~/Documents/Clustering_ABOS/codes/functions"
+fun_dir <- "~/Documents/Clustering_ABOS/codes/MASH/Functions_R"
 
-# Sex coding used throughout (defined once, reused everywhere)
+# Sex coding used throughout
 female_codes <- c("F", "Female", "FEMALE", "f", "female", "Femme")
 male_codes   <- c("M", "Male",   "MALE",   "m", "male",   "Homme")
 
-# Normal ALT window
+# Normal ALT window (flat cut-off, applied identically in Parts A, E and F)
 alt_lo <- 0
 alt_hi <- 35
+
+# Covariates required for a patient to be considered "complete"
+covar_cols <- c("sexe", "AgeJourIntervention", "BMI", "TGPUL", "AST")
 ```
 
 ## Data
@@ -105,21 +126,23 @@ liver_data       <- read.xlsx(file.path(data_dir, "liver_bio_transposed.xlsx"), 
 l_chem_details   <- read.xlsx(file.path(data_dir, "Chemical_details_liver.xlsx"))
 ```
 
-## Helper functions
+## External helper functions
 
 ```{r source-functions}
 # Pre-existing helper functions (limma comparison / plotting)
 # NOTE: the file name contains a space - kept exactly as on disk.
-source(file.path(fun_dir, "functions_ liver_metabo.R"))
-
-# Project function files (each covers one part of the analysis)
-source("functions_data_prep.R")            # chemical-name mapping used during data loading
-source("functions_logistic_normalALT.R")   # Part A: ALT vs metabolite logistic / CV helpers
-source("functions_plotting_clusters.R")    # Part B: cluster boxplot + significance-bracket helpers
-source("functions_logistic_wholecohort.R") # Part C: whole-cohort logistic engine + annotation
-source("functions_pathway_scores.R")       # Part C: pathway scoring + ranking
-source("GSEA_function.R")                  # Parts D/E: gene set enrichment analysis
+source(file.path(fun_dir,"functions_ liver_metabo.R"))       # Diffrential Analysis function 
+source(file.path(fun_dir,"functions_data_prep.R"))            # chemical-name mapping used during data loading
+source(file.path(fun_dir,"functions_logistic_normalALT.R"))   # Part A: ALT vs metabolite logistic / CV helpers
+source(file.path(fun_dir,"functions_plotting_clusters.R"))    # Part B: cluster boxplot + significance-bracket helpers
+source(file.path(fun_dir,"functions_logistic_wholecohort.R")) # Part C: whole-cohort logistic engine + annotation
+source(file.path(fun_dir,"functions_pathway_scores.R"))       # Part C: pathway scoring + ranking
+source(file.path(fun_dir,"GSEA_function.R"))                  # Parts D/E: gene set enrichment analysis
+source(file.path(fun_dir,"functions_flowchart.R"))            # 
 ```
+
+
+
 
 ## Name mapping and alignment
 
@@ -128,6 +151,98 @@ source("GSEA_function.R")                  # Parts D/E: gene set enrichment anal
 plasma_data <- map_chemical_names(plasma_data, chemical_details)
 liver_data  <- map_metabolite_names(liver_data, l_chem_details)
 ```
+
+
+
+
+# Cohort overview
+
+Accounting for the full ABOS cohort and for the normal-ALT subset, across the
+three omics layers. Counts first, flowcharts immediately after.
+
+## Counts
+
+```{r overview-counts}
+n_total <- nrow(clinical_data)
+
+# Variables a participant must have to enter the analysis
+keep_cols <- c(covar_cols, "Mash")
+
+complete_covars <- complete_rows(clinical_data, keep_cols)
+complete_ids    <- rownames(complete_covars)
+n_complete      <- length(complete_ids)
+n_excl          <- n_total - n_complete
+
+# Normal- vs high-ALT among complete-covariate patients
+normal_ids <- complete_ids[complete_covars$TGPUL >= alt_lo &
+                           complete_covars$TGPUL <= alt_hi]
+n_normal   <- length(normal_ids)
+n_high     <- n_complete - n_normal
+
+# Omics availability, whole cohort and normal-ALT subset
+omics <- list(plasma = colnames(plasma_data),
+              tx     = colnames(transcript_data),
+              liver  = colnames(liver_data))
+
+n_omics      <- sapply(omics, function(ids) length(intersect(complete_ids, ids)))
+n_omics_norm <- sapply(omics, function(ids) length(intersect(normal_ids,   ids)))
+
+# Per-variable missingness, with display names for the exclusion panel
+miss_cols <- c("ALT" = "TGPUL", "AST" = "AST", "MASH status" = "Mash")
+n_miss <- sapply(miss_cols, function(v) sum(is.na(clinical_data[[v]])))
+```
+
+## Flowchart — whole cohort
+
+```{r overview-flow-whole}
+flow_chart(
+  title = "ABOS cohort",
+  start = sprintf("%s participants with clinical data", n_fmt(n_total)),
+  steps = list(
+    list(keep = sprintf("%s participants with complete Age, Sex, BMI, ALT and AST",
+                        n_fmt(n_complete)),
+         excl = c("Exclusion:",
+                  sprintf("- Missing %s (n=%s)", names(n_miss), n_fmt(n_miss)),
+                  sprintf("  (categories overlap; %s excluded in total)", n_fmt(n_excl))))
+  ),
+  leaves = c(
+    sprintf("%s participants with plasma metabolomic data available",   n_fmt(n_omics["plasma"])),
+    sprintf("%s participants with liver transcriptomic data available", n_fmt(n_omics["tx"])),
+    sprintf("%s participants with liver metabolomic data available",    n_fmt(n_omics["liver"]))
+  )
+)
+```
+
+
+
+## Flowchart — normal-ALT subset
+
+```{r overview-flow-normal}
+flow_chart(
+  title = "ABOS cohort, normal ALT",
+  start = sprintf("%s participants with complete Age, Sex, BMI, ALT, AST and MASH status ",
+                  n_fmt(n_complete)),
+  steps = list(
+    list(
+      keep = sprintf("%s participants with normal ALT (%d-%d U/L)",
+                     n_fmt(n_normal), alt_lo, alt_hi),
+      excl = c("Exclusion:",
+               sprintf("- ALT outside %d-%d U/L \n (n=%s)", alt_lo, alt_hi, n_fmt(n_high)))
+    )
+  ),
+  leaves = c(
+    sprintf("%s participants with plasma metabolomic data available",   n_fmt(n_omics_norm["plasma"])),
+    sprintf("%s participants with liver transcriptomic data available", n_fmt(n_omics_norm["tx"])),
+    sprintf("%s participants with liver metabolomic data available",    n_fmt(n_omics_norm["liver"]))
+  )
+)
+```
+
+# Part A — Plasma metabolomics, normal ALT
+
+
+
+## Working dataset (reused by Parts A, B, C)
 
 ```{r align}
 # Patients present in BOTH clinical and plasma tables
@@ -138,101 +253,132 @@ plasma_sub     <- plasma_data[, common_samples, drop = FALSE]   # metabolites x 
 cat("Common (analysed) patients:", length(common_samples), "\n")
 ```
 
-## Working dataset (built once)
-
 ```{r work-table}
-# Normal ALT threshold (upper limit only)
-alt_hi <- 35
-
 work <- data.frame(
   patient = common_samples,
   mash    = clinical_sub$Mash,
   sex     = clinical_sub$sexe,
   ALT     = clinical_sub$TGPUL,
+  AST     = clinical_sub$AST,
   Age     = clinical_sub$AgeJourIntervention,
   BMI     = clinical_sub$BMI,
   stringsAsFactors = FALSE
 ) %>%
-  filter(!is.na(mash), !is.na(ALT)) %>%
+  filter(!is.na(mash), !is.na(ALT), !is.na(AST), !is.na(Age), !is.na(BMI)) %>%
   mutate(
     sex_label = case_when(
       as.character(sex) %in% female_codes ~ "Female",
       as.character(sex) %in% male_codes   ~ "Male",
       TRUE ~ NA_character_
     ),
-    alt_normal = ALT <= alt_hi,
-    alt_high   = ALT >  alt_hi,
-    mash_lab   = factor(ifelse(mash == 1, "MASH", "noMASH"),
-                        levels = c("noMASH", "MASH")),
-    alt_level  = ifelse(alt_normal, "normal", "high")
+    mash_lab  = factor(ifelse(mash == 1, "MASH", "noMASH"),
+                       levels = c("noMASH", "MASH")),
+    alt_level = ifelse(ALT >= alt_lo & ALT <= alt_hi, "normal", "high")
   ) %>%
   filter(!is.na(sex_label))
 
+stopifnot(!anyNA(work))    # no missing values anywhere in the table
+
+# Normal-ALT subset, derived once and reused everywhere below
 work_normal_alt <- work %>% filter(alt_level == "normal")
 
-cat("Patients with normal ALT (<= ", alt_hi, "): ",
-    nrow(work_normal_alt), "\n", sep = "")
+cat("Plasma \u2229 clinical:", length(common_samples),
+    "| retained in `work`:", nrow(work),
+    "| normal ALT (", alt_lo, "-", alt_hi, " U/L):", nrow(work_normal_alt), "\n")
 print(table(work_normal_alt$mash_lab, useNA = "ifany"))
 ```
 
-# Part A — Normal ALT
+## A1. Cohort accounting
 
-## A1. Flowchart
+```{r A-counts}
+plasma_ids      <- colnames(plasma_data)
+plasma_clin_ids <- intersect(plasma_ids, rownames(clinical_data))
+nA_plasma_total <- length(plasma_clin_ids)
 
-```{r flow-counts}
-n_total  <- nrow(work)
-n_high   <- sum(work$alt_level == "high",   na.rm = TRUE)
-n_normal <- sum(work$alt_level == "normal", na.rm = TRUE)
+clinical_plasma <- clinical_data[plasma_clin_ids, , drop = FALSE]
 
-norm_df    <- work %>% filter(alt_level == "normal")
-n_mash     <- sum(norm_df$mash_lab == "MASH")
-n_nomash   <- sum(norm_df$mash_lab == "noMASH")
-n_mash_f   <- sum(norm_df$mash_lab == "MASH"   & norm_df$sex_label == "Female")
-n_mash_m   <- sum(norm_df$mash_lab == "MASH"   & norm_df$sex_label == "Male")
-n_nomash_f <- sum(norm_df$mash_lab == "noMASH" & norm_df$sex_label == "Female")
-n_nomash_m <- sum(norm_df$mash_lab == "noMASH" & norm_df$sex_label == "Male")
+# Complete covariates AND known MASH status, among patients with plasma data
+A_complete <- complete_rows(clinical_plasma, c(covar_cols, "Mash")) %>%
+  mutate(
+    sex_label = ifelse(as.character(sexe) %in% female_codes, "Female", "Male"),
+    mash_lab  = ifelse(Mash == 1, "MASH", "noMASH")
+  )
 
-cat("Total:", n_total,
-    "| normal ALT:", n_normal,
-    "| high ALT (excluded):", n_high, "\n")
+nA_complete    <- nrow(A_complete)
+nA_excl_covars <- nA_plasma_total - nA_complete
+
+nA_cols <- c("MASH status" = "Mash", "AST" = "AST")
+nA_miss <- sapply(nA_cols, function(v) sum(is.na(clinical_plasma[[v]])))
+
+# Normal-ALT subset (from `work`, built once in Setup)
+nA_high   <- sum(work$alt_level == "high")
+nA_normal <- nrow(work_normal_alt)
+
+cat("Plasma patients:", nA_plasma_total,
+    "| complete covariates:", nA_complete, "(excluded", nA_excl_covars, ")\n",
+    "MASH:", sum(A_complete$mash_lab == "MASH"),
+    "| no-MASH:", sum(A_complete$mash_lab == "noMASH"), "\n",
+    "Normal ALT:", nA_normal, "| high ALT (excluded):", nA_high, "\n")
 ```
 
-```{r flowchart}
-grViz(sprintf("
-digraph cohort {
-  graph [rankdir = TB, splines = ortho, nodesep = 0.6]
-  node  [shape = box, style = filled, fillcolor = '#f7f7f7',
-         fontname = Helvetica, fontsize = 11, width = 2.6]
-  total     [label = 'Patients with plasma + clinical data\\n(n = %d)']
-  excl_high [label = 'Excluded: high ALT (>35)\\n(n = %d)',
-             fillcolor = '#ffffff', style = 'filled,dashed', width = 2.0]
-  normal    [label = 'Normal ALT (<= 35)\\n(n = %d)', fillcolor = '#ffffff']
-  mash      [label = 'MASH\\n(n = %d)\\nFemale %d / Male %d', fillcolor = '#ffffff']
-  nomash    [label = 'no-MASH\\n(n = %d)\\nFemale %d / Male %d', fillcolor = '#ffffff']
-  # invisible node keeps the exclusion arrow horizontal
-  node [shape = point, width = 0.01, height = 0.01, label = '']
-  gap
-  edge [arrowhead = normal, color = '#555555']
-  total -> gap [arrowhead = none]
-  gap   -> normal
-  gap   -> excl_high [style = dashed]
-  normal -> mash
-  normal -> nomash
-  { rank = same; gap; excl_high }
-}
-", n_total, n_high, n_normal,
-   n_mash,   n_mash_f,   n_mash_m,
-   n_nomash, n_nomash_f, n_nomash_m))
+### Flowchart — all plasma patients
+
+```{r A-flow-all}
+flow_chart(
+  title = "Plasma metabolomics: Whole cohort",
+  start = sprintf("Participants with plasma metabolomic data  \n (n = %s)", n_fmt(nA_plasma_total)),
+  steps = list(
+    list(keep = sprintf("Participants with complete  plasma metabolomi data \n (n = %s)",
+                        n_fmt(nA_complete)),
+         excl = c("Exclusion:",
+                  sprintf("- Missing %s (n=%s)", names(nA_miss), n_fmt(nA_miss)),
+                  sprintf("  (categories overlap; %s excluded in total)",
+                          n_fmt(nA_excl_covars))))
+  ),
+  leaves = c(
+    sprintf("Participants with MASH \n (n = %s)",
+            n_fmt(sum(A_complete$mash_lab == "MASH"))),
+    sprintf("Participants without MASH \n (n = %s)",
+            n_fmt(sum(A_complete$mash_lab == "noMASH")))
+  )
+)
 ```
 
-## A2. Summary (normal ALT)
+### Flowchart — normal-ALT plasma cohort
+
+```{r A-flow-normal}
+flow_chart(
+  title = "Plasma metabolomics: Normal ALT",
+  start = sprintf("Participants with plasma metabolomic data \n (n = %s)", n_fmt(nA_plasma_total)),
+  steps = list(
+    list(keep = sprintf("Participants with complete data \n (n = %s)",
+                        n_fmt(nA_complete)),
+         excl = c("Exclusion:",
+                  sprintf("- Missing %s (n=%s)", names(nA_miss), n_fmt(nA_miss)),
+                  sprintf("  (categories overlap; %s excluded in total)",
+                          n_fmt(nA_excl_covars)))),
+    list(keep = sprintf("Participants with normal ALT (%d-%d U/L) \n (n = %s)",
+                        alt_lo, alt_hi, n_fmt(nA_normal)),
+         excl = c("Exclusion:",
+                  sprintf("- ALT outside %d-%d U/L (n=%s)",
+                          alt_lo, alt_hi, n_fmt(nA_high))))
+  ),
+  leaves = c(
+    sprintf("Participants with MASH \n (n = %s)",
+            n_fmt(sum(work_normal_alt$mash_lab == "MASH"))),
+    sprintf("Participants without MASH \n (n = %s)",
+            n_fmt(sum(work_normal_alt$mash_lab == "noMASH")))
+  )
+)
+```
+
+## A2. Summary table (normal ALT)
 
 Group comparison test: Wilcoxon for continuous variables, Fisher for
-categorical ones, printed via `kable()` rather than an interactive widget.
+categorical ones.
 
-```{r cohort-table-normal}
-clinical_table <- work %>%
-  filter(alt_level == "normal") %>%
+```{r A-cohort-table}
+clinical_table <- work_normal_alt %>%
   select(mash_lab, sex_label, Age, BMI, ALT) %>%
   tbl_summary(
     by   = mash_lab,
@@ -263,18 +409,14 @@ clinical_table %>%
 
 ## A3. Differential abundance — limma (MASH vs no-MASH)
 
-```{r limma-normal}
-# Metadata + metabolite matrix (metabolites x samples).
-#
-# NOTE ON THE COHORT USED HERE:
-# the filter below removes only HIGH-ALT patients, so low-ALT patients (<10)
-# are still included. That is why the group sizes printed here are slightly
-# larger than the normal-ALT counts from Part A1.
-# To restrict strictly to normal ALT, replace the filter line with:
-#   m <- m[m$alt_level == "normal", ]
-m <- work
+The model is fitted on `work_normal_alt`, i.e. exactly the cohort counted in
+A1. (The previous version filtered on `!alt_high`, which let a slightly
+different set of patients through and produced group sizes that did not match
+the flowchart.)
+
+```{r A-limma}
+m <- work_normal_alt
 rownames(m) <- m$patient
-m <- m[!(m$alt_high %in% TRUE), ]     # NA alt_high treated as "not high"
 m$grp <- factor(m$mash_lab, levels = c("noMASH", "MASH"))
 
 cat("Group sizes entering limma:\n")
@@ -305,9 +447,9 @@ datatable(
 res_alt_norm$volcano
 ```
 
-### Metabolon annotation
+## A4. Metabolon annotation
 
-```{r annotate-normal}
+```{r A-annotate}
 sig <- res_alt_norm$results
 idx <- match(rownames(sig), chemical_details$CHEMICAL_NAME)
 cat("Unannotated:", sum(is.na(idx)), "/", nrow(sig), "\n")
@@ -316,16 +458,14 @@ sig$Super_pathway <- chemical_details$SUPER_PATHWAY[idx]
 sig$Sub_pathway   <- chemical_details$SUB_PATHWAY[idx]
 sig$metabolite    <- rownames(sig)
 
-sig_show <- sig[, c("Super_pathway", "Sub_pathway", "logFC", "FC", "adj.P.Val")]
-
-datatable(sig_show,
+datatable(sig[, c("Super_pathway", "Sub_pathway", "logFC", "FC", "adj.P.Val")],
           caption = "MASH vs no-MASH, normal ALT — Metabolon annotation",
           options = list(scrollX = TRUE))
 ```
 
-### Summary by sub-pathway
+## A5. Summary by sub-pathway
 
-```{r subpathway-summary-normal}
+```{r A-subpathway-summary}
 # Sorted by |logFC| first, so `Strongest` really lists the strongest hits.
 sub_sum <- sig %>%
   arrange(desc(abs(logFC))) %>%
@@ -348,17 +488,16 @@ datatable(sub_sum, options = list(scrollX = TRUE),
           caption = "Significant metabolites by Metabolon sub-pathway")
 ```
 
-## A4. Logistic regression: ALT alone vs metabolite alone vs ALT + metabolite
+## A6. Logistic regression: ALT alone vs metabolite alone vs ALT + metabolite
 
 ### Data prep (RINT)
 
-```{r logistic-data-prep}
+```{r A-logistic-data-prep}
 ## RINT is applied to every metabolite BEFORE any outcome is examined,
 ## so it cannot leak outcome information.
 
-work_aligned   <- work
 plasma_aligned <- as.data.frame(t(plasma_sub))          # samples x metabolites
-plasma_aligned <- plasma_aligned[work_aligned$patient, , drop = FALSE]
+plasma_aligned <- plasma_aligned[work$patient, , drop = FALSE]
 
 # Rank-based inverse normal transform
 rint <- function(x) {
@@ -367,7 +506,7 @@ rint <- function(x) {
   qnorm((rank(x, na.last = "keep") - 0.5) / n)
 }
 plasma_aligned <- as.data.frame(lapply(plasma_aligned, rint))
-rownames(plasma_aligned) <- work_aligned$patient        # lapply() drops row names
+rownames(plasma_aligned) <- work$patient                # lapply() drops row names
 
 # Metabolite names: clean for modelling, keep a map back to the originals
 orig_metabolites  <- rownames(plasma_sub)
@@ -376,9 +515,9 @@ colnames(plasma_aligned) <- clean_metabolites
 name_map <- setNames(orig_metabolites, clean_metabolites)
 
 # Modelling frames: built AFTER the transform
-df_all <- work_aligned %>%
+df_all <- work %>%
   select(patient, mash_lab, ALT, alt_level, sex) %>%
-  cbind(plasma_aligned[work_aligned$patient, , drop = FALSE]) %>%
+  cbind(plasma_aligned[work$patient, , drop = FALSE]) %>%
   filter(!is.na(mash_lab), !is.na(ALT))
 
 df_norm <- df_all %>% filter(alt_level == "normal")
@@ -396,7 +535,7 @@ cat("Max |z| in df_norm:",
 
 Currently disabled (`eval=FALSE`). Set `eval=TRUE` on this chunk to run it.
 
-```{r logistic-run, eval=FALSE}
+```{r A-logistic-run, eval=FALSE}
 res_norm <- run_alt_vs_met(df_norm)
 
 if (any(res_norm$separation_warning)) {
@@ -409,6 +548,9 @@ tbl2(res_norm)
 tbl3(res_norm, cv_auc_min = 0.70, fdr_max = 0.05)
 ```
 
+
+
+
 # Part B — Selected metabolites across clusters (CTRL vs CM vs LS)
 
 Selected metabolites compared across the CTRL / CM / LS clusters: pairwise
@@ -420,7 +562,7 @@ Plotting helpers (`stars_from_p`, `make_plot`) live in
 
 ## B1. Metabolites of interest
 
-```{r cluster-metabolite-list}
+```{r B-metabolite-list}
 met_list <- c(
   "1-carboxyethylvaline",
   "glycochenodeoxycholate glucuronide (1)",
@@ -443,7 +585,7 @@ if (length(missing_mets) > 0) {
 
 ## B2. Long-format table
 
-```{r cluster-long}
+```{r B-long}
 plasma_t        <- as.data.frame(t(plasma_data[met_list, , drop = FALSE]))
 plasma_t$sample <- rownames(plasma_t)
 
@@ -476,7 +618,7 @@ grp_levels <- levels(long$class)
 
 ## B3. Pairwise tests and bracket positions
 
-```{r cluster-tests}
+```{r B-tests}
 pw <- long %>%
   group_by(Metabolite) %>%
   group_modify(~ {
@@ -528,7 +670,7 @@ tick <- 0.015   # bracket end-tick length, as a fraction of y_range
 
 ## B4. One plot per metabolite
 
-```{r cluster-boxplots, fig.width=5.5, fig.height=5.5}
+```{r B-boxplots, fig.width=5.5, fig.height=5.5}
 mets  <- sort(unique(long$Metabolite))
 plots <- lapply(mets, make_plot)
 
@@ -539,12 +681,13 @@ for (p in plots) print(p)
 
 # Part C — Validation in the whole biopsy cohort
 
+Helper functions for this section (`run_logistic`, `annotate_tbl`) live in
+`functions_logistic_wholecohort.R`; the pathway-score helpers (`build_score`,
+`rank_pathways`) live in `functions_pathway_scores.R`.
+
 ## C1. Data prep
 
-Helper functions for this section (`run_logistic`, `annotate_tbl`) live in
-`functions_logistic_wholecohort.R`, sourced above.
-
-```{r whole-cohort-prep}
+```{r C-prep}
 ### mash ~ metabolite + Age + sex_bin + BMI + ALT (+ AST)
 
 plasma_whole <- t(plasma_sub)
@@ -565,7 +708,7 @@ cat("Patients entering the whole-cohort models:", nrow(plasma_whole), "\n")
 
 ## C2. Model 1 — adjusted for ALT
 
-```{r logistic-alt}
+```{r C-logistic-alt}
 res_alt <- run_logistic(plasma_whole, covars,
                         adjust = c("Age", "sex_bin", "BMI", "ALT"))
 sig_alt <- annotate_tbl(res_alt, chemical_details)
@@ -578,8 +721,8 @@ datatable(sig_alt, caption = "MASH ~ metabolite + Age + sex + BMI + ALT",
           options = list(scrollX = TRUE))
 
 # Sub-pathways represented by more than one / exactly one metabolite
-multi_alt      <- names(which(table(sig_alt$Sub_pathway) > 1))
-single_alt     <- names(which(table(sig_alt$Sub_pathway) == 1))
+multi_alt  <- names(which(table(sig_alt$Sub_pathway) > 1))
+single_alt <- names(which(table(sig_alt$Sub_pathway) == 1))
 
 sig_alt_multi <- sig_alt %>%
   filter(Sub_pathway %in% multi_alt) %>%
@@ -590,11 +733,16 @@ sig_alt_single <- sig_alt %>%
   filter(Sub_pathway %in% single_alt) %>%
   arrange(Sub_pathway) %>%
   select(Sub_pathway, metabolite)
+
+volcanoLogitFct(res_alt)
+forestLogitFct(res_alt, n_show = 10,
+               title    = "Metabolites associated with MASH",
+               subtitle = "Top 10 by FDR \u00b7 adjusted for Age, Sex, BMI, ALT")
 ```
 
 ## C3. Model 2 — adjusted for ALT + AST
 
-```{r logistic-alt-ast}
+```{r C-logistic-alt-ast}
 res_altast <- run_logistic(plasma_whole, covars,
                            adjust = c("Age", "sex_bin", "BMI", "ALT", "AST"))
 sig_altast <- annotate_tbl(res_altast, chemical_details)
@@ -605,11 +753,17 @@ cat("Total number of sub-pathways, ALT+AST-adjusted:",
 
 datatable(sig_altast, caption = "MASH ~ metabolite + Age + sex + BMI + ALT + AST",
           options = list(scrollX = TRUE))
+
+volcanoLogitFct(res_altast)
+
+forestLogitFct(res_altast, n_show = 10,
+               title    = "Metabolites associated with MASH",
+               subtitle = "Top 10 by FDR \u00b7 adjusted for Age, Sex, BMI, ALT, AST")
 ```
 
 ## C4. Metabolites robust to both models
 
-```{r logistic-robust}
+```{r C-logistic-robust}
 robust   <- intersect(sig_alt$metabolite, sig_altast$metabolite)
 mash_ash <- sig_altast %>% filter(metabolite %in% robust)
 
@@ -619,10 +773,107 @@ datatable(mash_ash,
           caption = "MASH-associated independent of ALT and AST",
           options = list(scrollX = TRUE))
 ```
+## C5. Normal-ALT hits: replication in the whole cohort
+
+```{r C-normalalt-replication}
+# Part A hits (limma, normal ALT). `sig` was annotated in A4.
+a_hits <- sig %>%
+  filter(!is.na(adj.P.Val), adj.P.Val < 0.05) %>%
+  transmute(
+    metabolite,
+    Super_pathway, Sub_pathway,
+    logFC_normalALT = round(logFC, 3),
+    FDR_normalALT   = signif(adj.P.Val, 3),
+    dir_normalALT   = ifelse(logFC > 0, "\u2191", "\u2193")
+  )
+
+# Direction + FDR from each whole-cohort model, for ALL metabolites
+# (using the unfiltered run_logistic() output, so "absent" can be told apart
+#  from "not tested")
+m1 <- res_alt %>%
+  transmute(metabolite,
+            OR_alt  = round(OR, 3),
+            FDR_alt = signif(FDR, 3),
+            dir_alt = ifelse(OR > 1, "\u2191", "\u2193"))
+
+m2 <- res_altast %>%
+  transmute(metabolite,
+            OR_altast  = round(OR, 3),
+            FDR_altast = signif(FDR, 3),
+            dir_altast = ifelse(OR > 1, "\u2191", "\u2193"))
+
+replication <- a_hits %>%
+  left_join(m1, by = "metabolite") %>%
+  left_join(m2, by = "metabolite") %>%
+  mutate(
+    in_alt = case_when(
+      is.na(FDR_alt)                            ~ "not tested",
+      metabolite %in% sig_alt$metabolite        ~ "present",
+      TRUE                                      ~ "absent"
+    ),
+    in_altast = case_when(
+      is.na(FDR_altast)                         ~ "not tested",
+      metabolite %in% sig_altast$metabolite     ~ "present",
+      TRUE                                      ~ "absent"
+    ),
+    # direction agreement is only meaningful where the metabolite replicated
+    concord_alt = case_when(
+      in_alt != "present"            ~ NA_character_,
+      dir_alt == dir_normalALT       ~ "same",
+      TRUE                           ~ "opposite"
+    ),
+    concord_altast = case_when(
+      in_altast != "present"         ~ NA_character_,
+      dir_altast == dir_normalALT    ~ "same",
+      TRUE                           ~ "opposite"
+    ),
+    summary = case_when(
+      in_alt == "present" & in_altast == "present" &
+        concord_alt == "same" & concord_altast == "same" ~ "Replicated in both, same direction",
+      in_alt == "present" & in_altast == "present"       ~ "Replicated in both, direction differs",
+      in_altast == "present"                             ~ "Replicated with ALT+AST only",
+      in_alt == "present"                                ~ "Replicated with ALT only (lost when AST added)",
+      in_alt == "not tested" | in_altast == "not tested" ~ "Not testable in whole cohort",
+      TRUE                                               ~ "Not replicated"
+    )
+  ) %>%
+  arrange(summary, FDR_normalALT)
+
+cat("Normal-ALT hits:", nrow(replication), "\n")
+print(table(replication$summary))
+cat("\nDirection agreement where replicated (ALT+AST model):\n")
+print(table(replication$concord_altast, useNA = "no"))
+
+datatable(
+  replication %>% transmute(
+    Metabolite            = metabolite,
+    `Super pathway`       = Super_pathway,
+    `Sub pathway`         = Sub_pathway,
+    `Normal ALT: logFC`   = logFC_normalALT,
+    `Normal ALT: FDR`     = FDR_normalALT,
+    `Normal ALT`          = dir_normalALT,
+    `Model 1 (ALT)`       = in_alt,
+    `M1 OR`               = OR_alt,
+    `M1 FDR`              = FDR_alt,
+    `M1 direction`        = dir_alt,
+    `M1 vs normal ALT`    = concord_alt,
+    `Model 2 (ALT+AST)`   = in_altast,
+    `M2 OR`               = OR_altast,
+    `M2 FDR`              = FDR_altast,
+    `M2 direction`        = dir_altast,
+    `M2 vs normal ALT`    = concord_altast,
+    Outcome               = summary
+  ),
+  rownames = FALSE,
+  options  = list(pageLength = 20, scrollX = TRUE),
+  caption  = paste("Normal-ALT metabolites (limma, FDR < 0.05) and their status in the",
+                   "whole-cohort logistic models adjusted for ALT, and for ALT + AST")
+)
+```
 
 ## C5. Singleton sub-pathways (ALT + AST model)
 
-```{r logistic-singletons}
+```{r C-logistic-singletons}
 single_altast <- names(which(table(sig_altast$Sub_pathway) == 1))
 
 sig_altast_m1 <- sig_altast %>%
@@ -650,122 +901,7 @@ datatable(
 )
 ```
 
-## C6. Model diagnostics (optional)
-
-Calibration (Hosmer-Lemeshow) and discrimination (AUC) per metabolite.
-Disabled by default because it refits several hundred models; set
-`eval=TRUE` on these chunks to run them.
-
-```{r fit-diagnostics, eval=FALSE}
-# Refit each significant metabolite in a given model and return HL p + AUC
-fit_diagnostics <- function(sig_tbl, adjust, plasma_mat, covars) {
-  form <- as.formula(paste("mash ~", paste(c("metabolite", adjust), collapse = " + ")))
-  out <- lapply(sig_tbl$metabolite, function(met) {
-    df <- data.frame(metabolite = as.numeric(plasma_mat[, met]), covars) |> na.omit()
-    df$metabolite <- as.numeric(scale(df$metabolite))
-    fit  <- suppressWarnings(glm(form, data = df, family = binomial()))
-    ynum <- as.numeric(as.character(df$mash))
-    prob <- fitted(fit)
-    data.frame(
-      metabolite = met,
-      AUC  = round(as.numeric(auc(roc(ynum, prob, direction = "<", quiet = TRUE))), 3),
-      HL_p = round(tryCatch(hoslem.test(ynum, prob, g = 10)$p.value,
-                            error = function(e) NA), 3)
-    )
-  })
-  bind_rows(out)
-}
-
-diag_alt    <- fit_diagnostics(sig_alt,    c("Age", "sex_bin", "BMI", "ALT"),
-                               plasma_whole, covars)
-diag_altast <- fit_diagnostics(sig_altast, c("Age", "sex_bin", "BMI", "ALT", "AST"),
-                               plasma_whole, covars)
-
-cat("== Model 1 (ALT) fit diagnostics ==\n")
-cat("Mean AUC:", round(mean(diag_alt$AUC), 3),
-    "| calibrated models (HL p > 0.05):", sum(diag_alt$HL_p > 0.05, na.rm = TRUE),
-    "of", nrow(diag_alt), "\n")
-datatable(diag_alt, caption = "Model 1 (ALT): AUC + Hosmer-Lemeshow per metabolite")
-
-cat("\n== Model 2 (ALT+AST) fit diagnostics ==\n")
-cat("Mean AUC:", round(mean(diag_altast$AUC), 3),
-    "| calibrated models (HL p > 0.05):", sum(diag_altast$HL_p > 0.05, na.rm = TRUE),
-    "of", nrow(diag_altast), "\n")
-datatable(diag_altast, caption = "Model 2 (ALT+AST): AUC + Hosmer-Lemeshow per metabolite")
-```
-
-```{r model-comparison, eval=FALSE}
-# Did adding AST change anything?
-alt_only    <- setdiff(sig_alt$metabolite,    sig_altast$metabolite)  # dropped when AST added
-altast_only <- setdiff(sig_altast$metabolite, sig_alt$metabolite)     # emerged when AST added
-
-cat("Robust to both        :", length(robust), "\n")
-cat("ALT only (lost w/ AST):", length(alt_only), "\n")
-cat("ALT+AST only (gained) :", length(altast_only), "\n\n")
-
-comparison <- full_join(
-  res_alt    %>% select(metabolite, OR_alt    = OR, FDR_alt    = FDR),
-  res_altast %>% select(metabolite, OR_altast = OR, FDR_altast = FDR),
-  by = "metabolite"
-) %>%
-  filter(FDR_alt <= 0.05 | FDR_altast <= 0.05) %>%
-  mutate(status = case_when(
-    FDR_alt <= 0.05 & FDR_altast <= 0.05 ~ "both",
-    FDR_alt <= 0.05                      ~ "ALT only",
-    TRUE                                 ~ "ALT+AST only"
-  )) %>%
-  transmute(metabolite, status,
-            OR_alt    = round(OR_alt, 3),    FDR_alt    = signif(FDR_alt, 3),
-            OR_altast = round(OR_altast, 3), FDR_altast = signif(FDR_altast, 3)) %>%
-  arrange(status, FDR_altast)
-
-datatable(comparison,
-          caption = "Model 1 (ALT) vs Model 2 (ALT+AST): per-metabolite comparison")
-```
-
-```{r poor-calibration, eval=FALSE}
-# Metabolites whose model was NOT well calibrated (HL p < 0.05)
-poorly_cal_alt    <- diag_alt$metabolite[!is.na(diag_alt$HL_p)       & diag_alt$HL_p       < 0.05]
-poorly_cal_altast <- diag_altast$metabolite[!is.na(diag_altast$HL_p) & diag_altast$HL_p    < 0.05]
-
-cat("== Poorly calibrated (HL p < 0.05) ==\n")
-cat("Model 1 (ALT):", length(poorly_cal_alt), "metabolites\n")
-print(poorly_cal_alt)
-cat("\nModel 2 (ALT+AST):", length(poorly_cal_altast), "metabolites\n")
-print(poorly_cal_altast)
-
-datatable(
-  diag_altast %>% filter(metabolite %in% poorly_cal_alt) %>% arrange(HL_p),
-  caption = "Model 1 metabolites failing calibration (HL p < 0.05)"
-)
-
-datatable(
-  diag_altast %>% filter(metabolite %in% poorly_cal_altast) %>% arrange(HL_p),
-  caption = "Model 2 metabolites failing calibration (HL p < 0.05)"
-)
-```
-
-```{r calibration-plot, eval=FALSE}
-# Visual calibration check for one poorly calibrated metabolite
-met <- poorly_cal_alt[15]
-met
-
-df  <- data.frame(metabolite = scale(as.numeric(plasma_whole[, met])), covars) |> na.omit()
-fit <- glm(mash ~ metabolite + Age + sex_bin + BMI + ALT, df, family = binomial())
-df$pred <- fitted(fit)
-df$obs  <- as.numeric(as.character(df$mash))
-
-df %>%
-  mutate(bin = ntile(pred, 10)) %>%
-  group_by(bin) %>%
-  summarise(pred = mean(pred), obs = mean(obs)) %>%
-  {
-    plot(.$pred, .$obs, xlim = c(0, 1), ylim = c(0, 1))
-    abline(0, 1, lty = 2)
-  }
-```
-
-## C7. Pathway scores — coherent sub-pathways
+## C6. Pathway scores — coherent sub-pathways
 
 Coherent = at least two validated metabolites moving in the same direction.
 
@@ -777,10 +913,7 @@ For each such sub-pathway:
 4. score = unweighted mean of the aligned Z-scores (per patient);
 5. regress the score on MASH, adjusted for age / sex / BMI / ALT / AST.
 
-Pathways are then ranked by the association of their score with MASH.
-Helpers (`build_score`, `rank_pathways`) live in `functions_pathway_scores.R`.
-
-```{r coherent-pathways}
+```{r C-coherent-pathways}
 coherent <- sig_altast %>%
   group_by(Sub_pathway) %>%
   summarise(
@@ -795,7 +928,7 @@ cat("Sub-pathways to score:", nrow(coherent), "\n")
 print(coherent$Sub_pathway)
 ```
 
-```{r pathway-scores}
+```{r C-pathway-scores}
 # Score using all metabolites in the sub-pathway (aligned by beta)
 score_mat <- sapply(coherent$Sub_pathway, build_score)
 rownames(score_mat) <- rownames(plasma_whole)
@@ -809,74 +942,33 @@ datatable(
   pathway_ranked %>% transmute(
     rank,
     Sub_pathway, n_metabolites,
-    OR       = round(OR, 3),
-    `95% CI` = sprintf("%.3f-%.3f", CI_low, CI_high),
-    p        = signif(pvalue, 3),
+    OR         = round(OR, 3),
+    `95% CI`   = sprintf("%.3f-%.3f", CI_low, CI_high),
+    p          = signif(pvalue, 3),
     `p (Holm)` = signif(p_holm, 3)
   ),
   rownames = FALSE,
   options  = list(scrollX = TRUE),
+
   caption  = paste("Coherent sub-pathway scores ranked by association with MASH",
                    "(adjusted for age, sex, BMI, ALT, AST)")
 )
+
+
+forestPathwayFct(pathway_ranked)
 ```
 
-```{r pathway-forest, fig.width=7.5, fig.height=5}
-top10 <- pathway_ranked %>%
-  arrange(p_holm) %>%
-  slice_head(n = 10) %>%
-  mutate(
-    Sub_pathway = factor(Sub_pathway, levels = rev(Sub_pathway)),  # rank order top -> bottom
-    label       = sprintf("%.2f (%.2f\u2013%.2f)", OR, CI_low, CI_high)
-  )
 
-# Headroom on the right for the OR labels (log scale)
-x_max <- max(top10$CI_high) * 1.6
 
-p_forest <- ggplot(top10, aes(x = OR, y = Sub_pathway)) +
-  geom_vline(xintercept = 1, linetype = "dashed", colour = "grey60", linewidth = 0.4) +
-  geom_errorbarh(aes(xmin = CI_low, xmax = CI_high),
-                 height = 0.18, colour = "#4a4a4a", linewidth = 0.6) +
-  geom_point(aes(size = n_metabolites), colour = "#185FA5", shape = 18) +
-  geom_text(aes(x = x_max, label = label), hjust = 1, size = 3.1, colour = "grey25") +
-  scale_x_log10(
-    breaks = c(0.5, 1, 2, 4, 8),
-    expand = expansion(mult = c(0.02, 0.02))
-  ) +
-  scale_size_continuous(range = c(2.5, 6), name = "Metabolites\nin score") +
-  coord_cartesian(xlim = c(min(top10$CI_low) * 0.9, x_max), clip = "off") +
-  labs(
-    x        = "Odds ratio per SD of pathway score (95% CI, log scale)",
-    y        = NULL,
-    title    = "Sub-pathway scores associated with MASH",
-    subtitle = "Top 10 by significance \u00b7 adjusted for age, sex, BMI, ALT, AST"
-  ) +
-  theme_minimal(base_size = 11, base_family = "Helvetica") +
-  theme(
-    plot.title    = element_text(face = "bold", size = 13, margin = ggplot2::margin(b = 2)),
-    plot.subtitle = element_text(colour = "grey40", size = 9.5, margin = ggplot2::margin(b = 12)),
-    axis.title.x  = element_text(size = 10, margin = ggplot2::margin(t = 10), colour = "grey25"),
-    axis.text.y   = element_text(size = 10, colour = "grey15"),
-    axis.text.x   = element_text(size = 9,  colour = "grey35"),
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor   = element_blank(),
-    panel.grid.major.x = element_line(colour = "grey92", linewidth = 0.3),
-    legend.position = "bottom",
-    legend.title    = element_text(size = 9, colour = "grey30"),
-    legend.text     = element_text(size = 9),
-    plot.margin     = ggplot2::margin(12, 20, 12, 12)
-  )
 
-p_forest
-```
+# Part D — Liver transcriptomics, whole cohort
 
-# Part D — Liver transcriptomics (whole cohort)
+## D1. Align transcriptomic data
 
-## D1. Align transcriptomic data to the MASH cohort
+`common_samples_tx`, `clinical_tx` and `tx_sub` are built once here and reused
+by Part E (the original code rebuilt an identical copy under a different name).
 
-```{r tx-align}
-# All patients with non-missing MASH status in clinical_data
-# (no plasma / ALT restriction here - this is the full transcriptomic cohort)
+```{r D-align}
 common_samples_tx <- intersect(rownames(clinical_data), colnames(transcript_data))
 
 clinical_tx <- clinical_data[common_samples_tx, , drop = FALSE]
@@ -885,7 +977,9 @@ tx_sub      <- transcript_data[, common_samples_tx, drop = FALSE]  # genes x sam
 cat("Common (transcriptomic) patients:", length(common_samples_tx), "\n")
 ```
 
-```{r tx-work-table}
+## D2. Working table (complete covariates)
+
+```{r D-work-table}
 work_tx <- data.frame(
   patient = common_samples_tx,
   mash    = clinical_tx$Mash,
@@ -908,11 +1002,40 @@ cat("Patients entering limma (complete covariates):", nrow(work_tx), "\n")
 print(table(work_tx$mash_lab, useNA = "ifany"))
 ```
 
-## D2. Differential expression — limma
+## D3. Flowchart
+
+```{r D-flow}
+nD_total    <- length(common_samples_tx)
+nD_retained <- nrow(work_tx)
+nD_excl     <- nD_total - nD_retained
+
+nD_cols <- c("Mash", "sexe", "AgeJourIntervention", "BMI", "TGPUL", "AST")
+nD_miss <- sapply(nD_cols, function(v) sum(is.na(clinical_tx[[v]])))
+```
+
+```{r}
+flow_chart(
+  title = "Liver transcriptomics: whole cohort",
+  start = sprintf("Participants with liver transcriptomics data \n (n = %s)", n_fmt(nD_total)),
+  steps = list(
+    list(keep = sprintf("Participants with data \n (n = %s)", n_fmt(nD_retained)),
+         excl = c("Exclusion:",
+                  sprintf("- Missing MASH status (n=%s)", n_fmt(nD_miss["Mash"])),
+                  sprintf("- Missing ALT (n=%s)",         n_fmt(nD_miss["TGPUL"])),
+                  sprintf("- Missing AST (n=%s)",         n_fmt(nD_miss["AST"])),
+                  sprintf("  (categories overlap; %s excluded in total)", n_fmt(nD_excl))))
+  ),
+  leaves = c(sprintf("Participants with MASH \n (n = %s)",    n_fmt(sum(work_tx$mash_lab == "MASH"))),
+             sprintf("Participants with no MASH \n (n = %s)", n_fmt(sum(work_tx$mash_lab == "noMASH"))))
+)
+```
+
+
+## D4. Differential expression — limma
 
 MASH vs no-MASH, adjusted for Age, sex, BMI, ALT and AST.
 
-```{r tx-limma}
+```{r D-limma}
 mt <- work_tx
 rownames(mt) <- mt$patient
 mt$grp     <- factor(mt$mash_lab, levels = c("noMASH", "MASH"))
@@ -939,12 +1062,9 @@ cat("MASH vs noMASH, whole cohort, adjusted for Age/sex/BMI/ALT/AST —",
 res_tx$volcano
 ```
 
-## D3. Gene set resources (built once)
+## D5. Gene set resources (built once, reused in Part E)
 
-The SYMBOL-to-ENTREZ map and the MSigDB GO:BP table are built once here and
-reused in both Part D and Part E.
-
-```{r gsea-resources}
+```{r D-gsea-resources}
 # SYMBOL -> ENTREZID
 symbEntrezid <- bitr(rownames(transcript_data),
                      fromType = "SYMBOL",
@@ -969,9 +1089,9 @@ gobp_human <- gobp_human[, c("gs_name", "entrez_gene")]
 gobp_human$gs_name <- str_to_lower(substr(gobp_human$gs_name, 6, nchar(gobp_human$gs_name)))
 ```
 
-## D4. Pathway enrichment analysis (whole cohort)
+## D6. Pathway enrichment (whole cohort)
 
-```{r tx-enrichment}
+```{r D-enrichment}
 gobp_tx_mash <- enrichMsigdbFct(results      = comp_tx$mstat,
                                 dataBase     = gobp_human,
                                 symbEntrezid = symbEntrezid)
@@ -994,53 +1114,86 @@ datatable(
 
 # Part E — Liver transcriptomics, normal ALT
 
-## E1. Restrict to normal-ALT patients
+Reuses `clinical_tx` / `tx_sub` from D1 and the gene-set resources from D5.
 
-```{r tx-normal-align}
-common_samples_tx_nrm <- intersect(rownames(clinical_data), colnames(transcript_data))
+## E1. Working table (normal ALT)
 
-clinical_tx_nrm <- clinical_data[common_samples_tx_nrm, , drop = FALSE]
-tx_sub_nrm      <- transcript_data[, common_samples_tx_nrm, drop = FALSE]
-
-cat("Common transcriptomic patients:", length(common_samples_tx_nrm), "\n")
-```
-
-```{r tx-normal-work-table}
+```{r E-work-table}
 work_tx_normal_alt <- data.frame(
-  patient = common_samples_tx_nrm,
-  mash    = clinical_tx_nrm$Mash,
-  sex     = clinical_tx_nrm$sexe,
-  ALT     = clinical_tx_nrm$TGPUL,
-  AST     = clinical_tx_nrm$AST,
-  Age     = clinical_tx_nrm$AgeJourIntervention,
-  BMI     = clinical_tx_nrm$BMI,
+  patient = common_samples_tx,
+  mash    = clinical_tx$Mash,
+  sex     = clinical_tx$sexe,
+  ALT     = clinical_tx$TGPUL,
+  AST     = clinical_tx$AST,
+  Age     = clinical_tx$AgeJourIntervention,
+  BMI     = clinical_tx$BMI,
   stringsAsFactors = FALSE
 ) %>%
-  filter(!is.na(mash), !is.na(ALT)) %>%
+  filter(!is.na(mash), !is.na(ALT), !is.na(AST), !is.na(Age), !is.na(BMI)) %>%
   mutate(
     sex_label = case_when(
       as.character(sex) %in% female_codes ~ "Female",
       as.character(sex) %in% male_codes   ~ "Male",
       TRUE ~ NA_character_
     ),
-    alt_normal = ALT >= alt_lo & ALT <= alt_hi,
-    mash_lab   = factor(ifelse(mash == 1, "MASH", "noMASH"),
-                        levels = c("noMASH", "MASH")),
-    alt_level  = ifelse(alt_normal, "normal", "abnormal")
+    mash_lab  = factor(ifelse(mash == 1, "MASH", "noMASH"),
+                       levels = c("noMASH", "MASH")),
+    alt_level = ifelse(ALT >= alt_lo & ALT <= alt_hi, "normal", "high")
   ) %>%
-  filter(!is.na(sex_label), alt_level == "normal")
+  filter(!is.na(sex_label))
 
-cat("Patients entering the normal-ALT transcriptomic analysis:",
-    nrow(work_tx_normal_alt), "\n")
+stopifnot(!anyNA(work_tx_normal_alt))
+
+# Step counts for the flowchart
+nE_total <- length(common_samples_tx)
+nE_step1 <- nrow(work_tx_normal_alt)          # complete covariates
+
+work_tx_normal_alt <- work_tx_normal_alt %>% filter(alt_level == "normal")
+nE_step2 <- nrow(work_tx_normal_alt)
+
+# Step 1: missingness among the transcriptomic patients
+nE_cols <- c("MASH status" = "Mash", "sex" = "sexe", "age" = "AgeJourIntervention",
+             "BMI" = "BMI", "ALT" = "TGPUL", "AST" = "AST")
+nE_miss <- sapply(nE_cols, function(v) sum(is.na(clinical_tx[[v]])))
+nE_miss <- nE_miss[nE_miss > 0]
+
+# Step 2: high ALT among the complete-covariate patients
+nE_high <- nE_step1 - nE_step2
+
+cat("Transcriptomic patients:", nE_total,
+    "| complete covariates:", nE_step1,
+    "| normal ALT:", nE_step2, "\n")
 print(table(work_tx_normal_alt$mash_lab, useNA = "ifany"))
 ```
 
-## E2. Differential expression — limma
+## E2. Flowchart
+
+```{r E-flow}
+flow_chart(
+  title = "Liver transcriptomics: normal ALT",
+  start = sprintf("Participants with liver transcriptomic data \n (n = %s)", n_fmt(nE_total)),
+  steps = list(
+    list(keep = sprintf("Participants with MASH & ALT data \n (n = %s)", n_fmt(nE_step1)),
+         excl = c("Exclusion:",
+                  sprintf("- Missing %s (n=%s)", names(nE_miss), n_fmt(nE_miss)),
+                  sprintf("  (categories overlap; %s excluded in total)",
+                          n_fmt(nE_total - nE_step1)))),
+    list(keep = sprintf("Participants with Normal-ALT \n (n = %s)", n_fmt(nE_step2)),
+         excl = c("Exclusion:",
+                  sprintf("- ALT outside %d-%d U/L (n=%s)", alt_lo, alt_hi, n_fmt(nE_high))))
+         ),
+         
+  leaves = c(sprintf("Participants with MASH \n (n = %s)",    n_fmt(sum(work_tx_normal_alt$mash_lab == "MASH"))),
+             sprintf("Participants with no MASH \n (n = %s)", n_fmt(sum(work_tx_normal_alt$mash_lab == "noMASH"))))
+)
+```
+
+## E3. Differential expression — limma
 
 MASH vs no-MASH, adjusted for Age, sex and BMI. ALT and AST are **not** in the
 model here: the cohort is already restricted to normal ALT.
 
-```{r tx-normal-limma}
+```{r E-limma}
 mt_normal_alt <- work_tx_normal_alt
 rownames(mt_normal_alt) <- mt_normal_alt$patient
 
@@ -1051,7 +1204,7 @@ cat("Group sizes entering limma — normal ALT:\n")
 print(table(mt_normal_alt$grp, useNA = "ifany"))
 
 # Expression matrix: genes x normal-ALT samples
-xt_normal_alt <- as.matrix(tx_sub_nrm[, rownames(mt_normal_alt), drop = FALSE])
+xt_normal_alt <- as.matrix(tx_sub[, rownames(mt_normal_alt), drop = FALSE])
 
 design_tx_normal_alt <- model.matrix(~ -1 + grp + Age + sex_bin + BMI,
                                      data = mt_normal_alt)
@@ -1073,9 +1226,9 @@ cat("MASH vs noMASH, normal ALT, adjusted for Age/sex/BMI — ",
 res_tx_normal_alt$volcano
 ```
 
-## E3. Pathway enrichment analysis (normal ALT)
+## E4. Pathway enrichment (normal ALT)
 
-```{r tx-normal-enrichment}
+```{r E-enrichment}
 gobp_tx_normal_alt <- enrichMsigdbFct(results      = comp_tx_normal_alt$mstat,
                                       dataBase     = gobp_human,
                                       symbEntrezid = symbEntrezid)
@@ -1094,12 +1247,11 @@ datatable(
   caption = "GO-BP enrichment, normal ALT (FDR <= 0.05)"
 ) %>%
   formatRound(columns = c("NES", "p.adjust"), digits = 6)
-
 ```
 
-## E4. Comparison with the whole cohort
+## E5. Comparison with the whole cohort
 
-```{r tx-enrichment-comparison}
+```{r E-enrichment-comparison}
 whole <- sig_pathway %>%
   transmute(ID,
             NES_whole = round(NES, 3),
@@ -1148,26 +1300,92 @@ datatable(
 
 ## F1. Restrict to normal-ALT patients with complete covariates
 
-```{r liver-align}
-common_liver <- intersect(work$patient, colnames(liver_data))
+```{r}
+## F1. Liver metabolomics working table
+liver_ids      <- intersect(colnames(liver_data), rownames(clinical_data))
+clinical_liver <- clinical_data[liver_ids, , drop = FALSE]
 
-m_liver <- work %>%
-  filter(patient %in% common_liver, alt_level == "normal",
-         !is.na(Age), !is.na(BMI), !is.na(sex_label), !is.na(mash_lab)) %>%
+work_liver <- data.frame(
+  patient = liver_ids,
+  mash    = clinical_liver$Mash,
+  sex     = clinical_liver$sexe,
+  ALT     = clinical_liver$TGPUL,
+  AST     = clinical_liver$AST,
+  Age     = clinical_liver$AgeJourIntervention,
+  BMI     = clinical_liver$BMI,
+  stringsAsFactors = FALSE
+) %>%
+  filter(!is.na(mash), !is.na(ALT), !is.na(AST), !is.na(Age), !is.na(BMI)) %>%
   mutate(
-    grp     = factor(mash_lab, levels = c("noMASH", "MASH")),
-    sex_bin = ifelse(sex_label == "Female", 0, 1)
-  )
+    sex_label = case_when(
+      as.character(sex) %in% female_codes ~ "Female",
+      as.character(sex) %in% male_codes   ~ "Male",
+      TRUE ~ NA_character_
+    ),
+    mash_lab  = factor(ifelse(mash == 1, "MASH", "noMASH"),
+                       levels = c("noMASH", "MASH")),
+    grp       = mash_lab,
+    sex_bin   = ifelse(sex_label == "Female", 0, 1),
+    alt_level = ifelse(ALT >= alt_lo & ALT <= alt_hi, "normal", "high")
+  ) %>%
+  filter(!is.na(sex_label))
+
+stopifnot(!anyNA(work_liver))
+
+# Normal-ALT subset: the cohort Part F actually models
+m_liver <- work_liver %>% filter(alt_level == "normal")
 rownames(m_liver) <- m_liver$patient
 
-cat("Liver + clinical patients:", length(common_liver),
-    "| normal ALT with complete covariates:", nrow(m_liver), "\n")
+cat("Liver + clinical patients:", length(liver_ids),
+    "| complete covariates:", nrow(work_liver),
+    "| normal ALT:", nrow(m_liver), "\n")
 print(table(m_liver$grp))
 ```
 
-## F2. Differential abundance — limma (adjusted for Age, sex, BMI)
 
-```{r liver-limma}
+```{r F-align}
+nF_total    <- length(liver_ids)
+nF_retained <- nrow(m_liver)
+
+nF_cols <- c("MASH status" = "Mash", "sex" = "sexe", "age" = "AgeJourIntervention",
+             "BMI" = "BMI", "ALT" = "TGPUL")
+nF_miss <- sapply(nF_cols, function(v) sum(is.na(clinical_liver[[v]])))
+nF_miss <- nF_miss[nF_miss > 0]
+
+nF_high <- sum(work_liver$alt_level == "high")
+
+stopifnot(nF_high + sum(nF_miss) >= nF_total - nF_retained)
+```
+
+## F2. Flowchart
+
+```{r F-flow}
+
+flow_chart(
+  title = "Liver metabolomics: normal ALT",
+  start = sprintf("Participants with liver metabolomic data\n (n = %s)", n_fmt(nF_total)),
+  steps = list(
+    list(keep = sprintf("Participants with normal ALT and complete covariates \n (n = %s)",
+                        n_fmt(nF_retained)),
+         excl = c("Exclusion:",
+                  sprintf("- ALT outside %d-%d U/L \n (n=%s)", alt_lo, alt_hi, n_fmt(nF_high)),
+                  sprintf("- Missing %s \n (n=%s)", names(nF_miss), n_fmt(nF_miss))))
+  ),
+  leaves = c(
+    sprintf("Participants with MASH \n (n = %s)",    n_fmt(sum(m_liver$grp == "MASH"))),
+    sprintf("Participants without MASH \n (n = %s)", n_fmt(sum(m_liver$grp == "noMASH")))
+  )
+)
+```
+
+
+
+
+
+
+## F3. Differential abundance — limma (adjusted for Age, sex, BMI)
+
+```{r F-limma}
 x_liver <- as.matrix(liver_data[, m_liver$patient, drop = FALSE])
 
 design_liver <- model.matrix(~ -1 + grp + Age + sex_bin + BMI, data = m_liver)
@@ -1186,9 +1404,9 @@ datatable(
 )
 ```
 
-## F3. Metabolon annotation
+## F4. Metabolon annotation
 
-```{r liver-annotate}
+```{r F-annotate}
 sig_liver <- res_liver$results
 idx <- match(rownames(sig_liver), l_chem_details$BIOCHEMICAL)
 cat("Unannotated:", sum(is.na(idx)), "/", nrow(sig_liver), "\n")
@@ -1198,9 +1416,9 @@ sig_liver$Sub_pathway   <- l_chem_details$SUB.PATHWAY[idx]
 sig_liver$metabolite    <- rownames(sig_liver)
 ```
 
-## F4. Summary by sub-pathway
+## F5. Summary by sub-pathway
 
-```{r liver-subpathway-summary}
+```{r F-subpathway-summary}
 sub_sum_liver <- sig_liver %>%
   arrange(desc(abs(logFC))) %>%
   group_by(Super_pathway, Sub_pathway) %>%
@@ -1213,13 +1431,10 @@ sub_sum_liver <- sig_liver %>%
       all(logFC < 0) ~ "all down",
       TRUE ~ paste0(sum(logFC > 0), " up / ", sum(logFC < 0), " down")
     ),
-    median_logFC = round(median(logFC), 3),
-    median_FC    = round(2^median(logFC), 2),
-    best_FDR     = signif(min(adj.P.Val), 3),
     strongest    = paste(head(metabolite, 3), collapse = "; "),
     .groups      = "drop"
   ) %>%
-  arrange(desc(No_sig), best_FDR)
+  arrange(desc(No_sig))
 
 datatable(sub_sum_liver, options = list(scrollX = TRUE),
           caption = "Liver: significant metabolites by Metabolon sub-pathway (normal ALT)")
@@ -1228,5 +1443,5 @@ datatable(sub_sum_liver, options = list(scrollX = TRUE),
 # Session info
 
 ```{r session-info}
-#sessionInfo()
+# sessionInfo()
 ```
